@@ -163,6 +163,7 @@ def extract_coordinates_and_label(ref_text, image_width, image_height):
 
 
 def draw_bounding_boxes(image, refs, jdx):
+    """Cắt Image theo tọa độ trong refs và vẽ bounding box lên image"""
 
     image_width, image_height = image.size
     img_draw = image.copy()
@@ -286,33 +287,16 @@ if __name__ == "__main__":
             )
         )
 
-    # for image in tqdm(images):
-
-    #     prompt_in = prompt
-    #     cache_list = [
-    #         {
-    #             "prompt": prompt_in,
-    #             "multi_modal_data": {"image": DeepseekOCRProcessor().tokenize_with_images(images = [image], bos=True, eos=True, cropping=CROP_MODE)},
-    #         }
-    #     ]
-    #     batch_inputs.extend(cache_list)
-
     outputs_list = llm.generate(batch_inputs, sampling_params=sampling_params)
 
     output_path = OUTPUT_PATH
 
     os.makedirs(output_path, exist_ok=True)
 
-    mmd_det_path = (
-        output_path + "/" + INPUT_PATH.split("/")[-1].replace(".pdf", "_det.mmd")
-    )
     mmd_path = output_path + "/" + INPUT_PATH.split("/")[-1].replace("pdf", "mmd")
-    pdf_out_path = (
-        output_path + "/" + INPUT_PATH.split("/")[-1].replace(".pdf", "_layouts.pdf")
-    )
+
     contents_det = ""
     contents = ""
-    draw_images = []
     jdx = 0
     for output, img in zip(outputs_list, images):
         content = output.outputs[0].text
@@ -333,9 +317,8 @@ if __name__ == "__main__":
         # print(matches_ref)
         result_image = process_image_with_refs(image_draw, matches_ref, jdx)
 
-        draw_images.append(result_image)
-
         for idx, a_match_image in enumerate(matches_images):
+            # TODO: có thể xử lý upload image ở đây
             content = content.replace(
                 a_match_image, f"![](images/" + str(jdx) + "_" + str(idx) + ".jpg)\n"
             )
@@ -353,10 +336,5 @@ if __name__ == "__main__":
 
         jdx += 1
 
-    with open(mmd_det_path, "w", encoding="utf-8") as afile:
-        afile.write(contents_det)
-
     with open(mmd_path, "w", encoding="utf-8") as afile:
         afile.write(contents)
-
-    pil_to_pdf_img2pdf(draw_images, pdf_out_path)
