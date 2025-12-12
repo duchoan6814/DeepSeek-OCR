@@ -18,12 +18,13 @@ from config import (
     MODEL_PATH,
     INPUT_PATH,
     OUTPUT_PATH,
-    PROMPT,
     SKIP_REPEAT,
     MAX_CONCURRENCY,
     NUM_WORKERS,
     CROP_MODE,
 )
+
+PROMPT = "<image>\n<|grounding|>Convert the document to markdown."
 
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -258,11 +259,69 @@ def process_single_image(image):
         "prompt": prompt_in,
         "multi_modal_data": {
             "image": DeepseekOCRProcessor().tokenize_with_images(
-                images=[image], bos=True, eos=True, cropping=CROP_MODE
+                images=[image], bos=True, eos=True, cropping=CROP_MODE, conversation=PROMPT
             )
         },
     }
     return cache_item
+
+
+def process_pdf_file(pdf_path: str)-> str:
+    """process pdf file"""
+    print(f"{Colors.RED}PDF loading .....{Colors.RESET}")
+
+    images = pdf_to_images_high_quality(pdf_path)
+
+    prompt = PROMPT
+
+    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+        batch_inputs = list(
+            tqdm(
+                executor.map(process_single_image, images),
+                total=len(images),
+                desc="Pre-processed images",
+            )
+        )
+
+    outputs_list = llm.generate(batch_inputs, sampling_params=sampling_params)
+
+    contents = ""
+
+    jdx = 0
+    for output, img in zip(outputs_list, images):
+        content = output.outputs[0].text
+
+        if "<｜end▁of▁sentence｜>" in content:  # repeat no eos
+            content = content.replace("<｜end▁of▁sentence｜>", "")
+        else:
+            if SKIP_REPEAT:
+                continue
+
+        image_draw = img.copy()
+
+        matches_ref, matches_images, mathes_other = re_match(content)
+        # print(matches_ref)
+        result_image = process_image_with_refs(image_draw, matches_ref, jdx)
+
+        for idx, a_match_image in enumerate(matches_images):
+            content = content.replace(
+                a_match_image, f"![](images/" + str(jdx) + "_" + str(idx) + ".jpg)\n"
+            )
+
+        for idx, a_match_other in enumerate(mathes_other):
+            content = (
+                content.replace(a_match_other, "")
+                .replace("\\coloneqq", ":=")
+                .replace("\\eqqcolon", "=:")
+                .replace("\n\n\n\n", "\n\n")
+                .replace("\n\n\n", "\n\n")
+            )
+
+        contents += content
+
+        jdx += 1
+
+    return contents
 
 
 if __name__ == "__main__":
@@ -295,7 +354,6 @@ if __name__ == "__main__":
 
     mmd_path = output_path + "/" + INPUT_PATH.split("/")[-1].replace("pdf", "mmd")
 
-    contents_det = ""
     contents = ""
     jdx = 0
     for output, img in zip(outputs_list, images):
@@ -308,8 +366,6 @@ if __name__ == "__main__":
                 continue
 
         page_num = f"\n<--- Page Split --->"
-
-        contents_det += content + f"\n{page_num}\n"
 
         image_draw = img.copy()
 
@@ -332,7 +388,7 @@ if __name__ == "__main__":
                 .replace("\n\n\n", "\n\n")
             )
 
-        contents += content + f"\n{page_num}\n"
+        contents += content
 
         jdx += 1
 
