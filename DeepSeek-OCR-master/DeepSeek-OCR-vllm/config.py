@@ -8,23 +8,27 @@
 BASE_SIZE = 1024
 IMAGE_SIZE = 640
 CROP_MODE = True
-MIN_CROPS= 2
-MAX_CROPS= 6 # max:9; If your GPU memory is small, it is recommended to set it to 6.
-MAX_CONCURRENCY = 100 # If you have limited GPU memory, lower the concurrency count.
-NUM_WORKERS = 64 # image pre-process (resize/padding) workers 
+MIN_CROPS = 2
+MAX_CROPS = 6  # max:9; If your GPU memory is small, it is recommended to set it to 6.
+MAX_CONCURRENCY = 100  # If you have limited GPU memory, lower the concurrency count.
+NUM_WORKERS = 64  # image pre-process (resize/padding) workers
 PRINT_NUM_VIS_TOKENS = False
 SKIP_REPEAT = True
-MODEL_PATH = 'deepseek-ai/DeepSeek-OCR' # change to your model path
+MODEL_PATH = "deepseek-ai/DeepSeek-OCR"  # change to your model path
 
 # TODO: change INPUT_PATH
-# .pdf: run_dpsk_ocr_pdf.py; 
-# .jpg, .png, .jpeg: run_dpsk_ocr_image.py; 
+# .pdf: run_dpsk_ocr_pdf.py;
+# .jpg, .png, .jpeg: run_dpsk_ocr_image.py;
 # Omnidocbench images path: run_dpsk_ocr_eval_batch.py
 
-INPUT_PATH = '' 
-OUTPUT_PATH = ''
+INPUT_PATH = (
+    "assets/sach-giao-khoa-toan-12-tap-1-ket-noi-tri-thuc-voi-cuoc-song-17-19.pdf"
+)
+OUTPUT_PATH = "assets"
 
-PROMPT = '<image>\n<|grounding|>Convert the document to markdown.'
+PROMPT = "<image>\nDescribe this image in detail."
+TEMP_DIR = "temp"
+
 # PROMPT = '<image>\nFree OCR.'
 # TODO commonly used prompts
 # document: <image>\n<|grounding|>Convert the document to markdown.
