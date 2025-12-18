@@ -30,7 +30,8 @@ PROMPT = "<image>\n<|grounding|>Convert the document to markdown."
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from deepseek_ocr import DeepseekOCRForCausalLM
-
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 from vllm.model_executor.models.registry import ModelRegistry
 
 from vllm import LLM, SamplingParams
@@ -111,6 +112,16 @@ def pdf_to_images_high_quality(pdf_path, dpi=144, image_format="PNG"):
 
     pdf_document.close()
     return images
+
+
+def high_quality_image(image: Image.Image) -> Image.Image:
+    """Tăng chất lượng hình ảnh chuyền vào, giống logic của pdf_to_images_high_quality"""
+    dpi = 144
+    zoom = dpi / 72.0
+    new_width = int(image.width * zoom)
+    new_height = int(image.height * zoom)
+    high_res_image = image.resize((new_width, new_height), Image.LANCZOS)
+    return high_res_image
 
 
 def pil_to_pdf_img2pdf(pil_images, output_path):
@@ -271,6 +282,55 @@ def process_single_image(image):
     return cache_item
 
 
+def process_each_page(image_url: str) -> str:
+    """Nhận vào url hình ảnh của 1 page, trả về content markdown của page đó"""
+    try:
+        image = Image.open(image_url)
+        image = high_quality_image(image)
+
+        prompt = PROMPT
+
+        input_item = process_single_image(image)
+
+        outputs = llm.generate([input_item], sampling_params=sampling_params)
+
+        content = outputs[0].outputs[0].text
+
+        if "<｜end▁of▁sentence｜>" in content:  # repeat no eos
+            content = content.replace("<｜end▁of▁sentence｜>", "")
+        else:
+            if SKIP_REPEAT:
+                return ""
+
+        image_draw = image.copy()
+
+        matches_ref, matches_images, mathes_other = re_match(content)
+
+        # print(matches_ref)
+        result_image = process_image_with_refs(image_draw, matches_ref, 0)
+
+        # TODO: lưu result_image lên strapi server
+
+        for idx, a_match_image in enumerate(matches_images):
+            content = content.replace(
+                a_match_image, f"![](images/" + str(0) + "_" + str(idx) + ".jpg)\n"
+            )
+
+        for idx, a_match_other in enumerate(mathes_other):
+            content = (
+                content.replace(a_match_other, "")
+                .replace("\\coloneqq", ":=")
+                .replace("\\eqqcolon", "=:")
+                .replace("\n\n\n\n", "\n\n")
+                .replace("\n\n\n", "\n\n")
+            )
+
+        return content
+    except Exception as e:
+        print(e)
+        raise e
+
+
 def process_pdf_file(pdf_path: str) -> str:
     """Nhận vào path trỏ tới file pdf, và trả content markdown của file pdf đó"""
     print(f"{Colors.RED}PDF loading .....{Colors.RESET}")
@@ -289,8 +349,6 @@ def process_pdf_file(pdf_path: str) -> str:
         )
 
     outputs_list = llm.generate(batch_inputs, sampling_params=sampling_params)
-
-    contents = ""
 
     jdx = 0
     for output, img in zip(outputs_list, images):
@@ -322,7 +380,7 @@ def process_pdf_file(pdf_path: str) -> str:
                 .replace("\n\n\n", "\n\n")
             )
 
-        contents += content
+        # TODO: Sau khi có content markdown của 1 page, xử lý nó
 
         jdx += 1
 
