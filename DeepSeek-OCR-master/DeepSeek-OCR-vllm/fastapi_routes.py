@@ -78,7 +78,7 @@ async def ocr_page(
 ):
     """Chuyền lên thông tin hình ảnh, trả về kết quả OCR dưới dạng JSON."""
 
-    result = process_each_page(
+    result = await process_each_page(
         request.image_url, custom_prompt=request.custom_prompt, llm=config.llm
     )
 
