@@ -1,3 +1,4 @@
+import asyncio
 from tkinter import Image
 from typing import Optional
 from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
@@ -14,6 +15,12 @@ import requests
 from io import BytesIO
 import httpx
 from configs import STRAPI_API_URL, STRAPI_API_TOKEN
+from tqdm import tqdm
+import logging
+import uuid
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 logits_processors = [
     NoRepeatNGramLogitsProcessor(
@@ -91,7 +98,7 @@ def extract_coordinates_and_label(ref_text, image_width, image_height):
     return (label_type, cor_list)
 
 
-def draw_bounding_boxes(image, refs, jdx):
+def draw_bounding_boxes(image, refs, content: str):
     """Cắt Image theo tọa độ trong refs và vẽ bounding box lên image"""
 
     image_width, image_height = image.size
@@ -108,7 +115,7 @@ def draw_bounding_boxes(image, refs, jdx):
 
     cropped_images = []
 
-    for i, ref in enumerate(refs):
+    for ref in refs:
         try:
             result = extract_coordinates_and_label(ref, image_width, image_height)
             if result:
@@ -134,7 +141,22 @@ def draw_bounding_boxes(image, refs, jdx):
                         try:
                             cropped = image.crop((x1, y1, x2, y2))
                             # cropped.save(f"{OUTPUT_PATH}/images/{jdx}_{img_idx}.jpg")
-                            cropped_images.append(cropped)
+
+                            # replace ref placeholder with other placeholder to avoid conflict
+                            unique_id = str(uuid.uuid4())
+
+                            placeholder = f"<|image_{unique_id}|>"
+
+                            logger.debug("Replacing %s with %s", ref[0], placeholder)
+
+                            content = content.replace(ref[0], placeholder, 1)
+
+                            cropped_images.append(
+                                {
+                                    "image": cropped,
+                                    "placeholder": placeholder,
+                                }
+                            )
                         except Exception as e:
                             print(e)
                             pass
@@ -175,15 +197,38 @@ def draw_bounding_boxes(image, refs, jdx):
         except:
             continue
     img_draw.paste(overlay, (0, 0), overlay)
-    return cropped_images, img_draw
+    return cropped_images, img_draw, content
 
 
-def process_image_with_refs(image, ref_texts, jdx):
-    cropped_images, img_draw = draw_bounding_boxes(image, ref_texts, jdx)
-    return cropped_images
+async def process_image_with_semaphore(
+    semaphore, image: Image.Image, index: int, pbar, *, for_id: str
+):
+    async with semaphore:
+        try:
+            img_byte_arr = BytesIO()
+            image.save(img_byte_arr, format="PNG")
+            image_bytes = img_byte_arr.getvalue()
+
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    url=f"{STRAPI_API_URL}/api/media/upload",
+                    files={"file": (f"image_{index}.png", image_bytes, "image/png")},
+                    data={"folderId": 8},
+                    headers={"Authorization": f"Bearer {STRAPI_API_TOKEN}"},
+                    timeout=60,
+                )
+                response.raise_for_status()
+                response_data = response.json().get("data", [])
+                return_data = response_data[0] if len(response_data) > 0 else None
+
+            return {"id": for_id, "data": return_data}
+        finally:
+            pbar.update(1)
 
 
-def process_each_page(image_url: str, llm, custom_prompt: Optional[str] = None) -> str:
+async def process_each_page(
+    image_url: str, llm, custom_prompt: Optional[str] = None
+) -> str:
     """Nhận vào url hình ảnh của 1 page, trả về content markdown của page đó"""
     try:
         image = open_image_from_url(image_url)
@@ -210,35 +255,49 @@ def process_each_page(image_url: str, llm, custom_prompt: Optional[str] = None) 
         matches_ref, matches_images, mathes_other = re_match(content)
 
         # print(matches_ref)
-        cropped_images = process_image_with_refs(image_draw, matches_ref, 0)
-        print("Cropped images count:", len(cropped_images))
+        cropped_images, image_draw, content = draw_bounding_boxes(
+            image_draw, matches_ref, content
+        )
+        logger.debug("Cropped images count: %d", len(cropped_images))
 
         upload_results = []
 
-        for idx, result_image in enumerate(cropped_images):
-            print("Processed image with refs.", result_image)
+        max_worksers = 5
 
-            img_byte_arr = BytesIO()
-            result_image.save(img_byte_arr, format="PNG")
-            image_bytes = img_byte_arr.getvalue()
+        semaphore = asyncio.Semaphore(max_worksers)
 
-            upload_image_result = httpx.post(
-                url=f"{STRAPI_API_URL}/api/media/upload",
-                files={"file": (f"image_{idx}.png", image_bytes, "image/png")},
-                data={"folderId": 8},
-                headers={"Authorization": f"Bearer {STRAPI_API_TOKEN}"},
-                timeout=60
+        with tqdm(total=len(cropped_images), desc="Uploading images") as pbar:
+            tasks = [
+                process_image_with_semaphore(
+                    semaphore,
+                    result_image["image"],
+                    index,
+                    pbar,
+                    for_id=result_image["placeholder"],
+                )
+                for index, result_image in enumerate(cropped_images)
+            ]
+
+            upload_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        logger.debug("Upload results: %s", upload_results)
+
+        for idx, upload_result in enumerate(upload_results):
+            if isinstance(upload_result, Exception):
+                logger.error("Error uploading image: %s", upload_result)
+                continue
+
+            if not upload_result["id"]:
+                logger.error("No ID in upload result: %s", upload_result)
+                continue
+
+            if not upload_result["data"]:
+                logger.error("No data in upload result: %s", upload_result)
+                continue
+
+            content = content.replace(
+                upload_result["id"], f"![]({upload_result['data']['id']})\n"
             )
-
-            result = upload_image_result.json()
-            print("Uploaded image result:", result)
-            upload_results.extend(result.get("data", []))
-        print("All uploaded results:", type(upload_results))
-
-        for idx, a_match_image in enumerate(matches_images):
-            print("Index type", type(idx))
-            image_path = upload_results[idx]["id"]
-            content = content.replace(a_match_image, f"![]({image_path})\n")
 
         for idx, a_match_other in enumerate(mathes_other):
             content = (
@@ -251,5 +310,5 @@ def process_each_page(image_url: str, llm, custom_prompt: Optional[str] = None) 
 
         return content
     except Exception as e:
-        print(e)
+        logger.error("Error processing page: %s", e)
         raise e
